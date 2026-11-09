@@ -55,14 +55,17 @@ impl SelectPhase {
     pub fn feed(&mut self, s: &mut Session, i: &Input) -> Result<SelOutcome> {
         match i {
             Input::Pick(hs) => {
+                // Sets, not list scans: picking ALL of a large drawing is one pick of every object.
                 let changed: Vec<Handle> = if self.removing {
-                    let gone: Vec<Handle> = self.picked.iter().copied().filter(|h| hs.contains(h)).collect();
-                    self.picked.retain(|h| !hs.contains(h));
+                    let out: std::collections::HashSet<Handle> = hs.iter().copied().collect();
+                    let gone: Vec<Handle> = self.picked.iter().copied().filter(|h| out.contains(h)).collect();
+                    self.picked.retain(|h| !out.contains(h));
                     gone
                 } else {
+                    let mut have: std::collections::HashSet<Handle> = self.picked.iter().copied().collect();
                     let mut added = Vec::new();
                     for h in hs {
-                        if !self.picked.contains(h) {
+                        if have.insert(*h) {
                             self.picked.push(*h);
                             added.push(*h);
                         }
@@ -95,7 +98,10 @@ impl SelectPhase {
                     "u" | "undo" => {
                         match self.history.pop() {
                             Some((hs, true)) => self.picked.extend(hs),
-                            Some((hs, false)) => self.picked.retain(|h| !hs.contains(h)),
+                            Some((hs, false)) => {
+                                let out: std::collections::HashSet<Handle> = hs.into_iter().collect();
+                                self.picked.retain(|h| !out.contains(h));
+                            }
                             None => s.echo("Nothing to undo."),
                         }
                         s.echo(format!("{} total", self.picked.len()));

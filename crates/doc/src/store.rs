@@ -16,6 +16,26 @@ const SHARDS: usize = 64;
 struct Chunk {
     id: u32,
     items: Vec<Arc<Entity>>,
+    /// Each item's handle, in the same order: finding one scans these, not the entities behind their pointers.
+    keys: Vec<Handle>,
+}
+
+impl Chunk {
+    fn at(&self, h: Handle) -> Option<usize> {
+        self.keys.iter().position(|k| *k == h)
+    }
+    fn insert(&mut self, i: usize, e: Arc<Entity>) {
+        self.keys.insert(i, e.handle);
+        self.items.insert(i, e);
+    }
+    fn push(&mut self, e: Arc<Entity>) {
+        self.keys.push(e.handle);
+        self.items.push(e);
+    }
+    fn remove(&mut self, i: usize) -> Arc<Entity> {
+        self.keys.remove(i);
+        self.items.remove(i)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,7 +91,8 @@ impl EntityStore {
     }
     pub fn get(&self, h: Handle) -> Option<&Arc<Entity>> {
         let pos = self.chunk_pos(self.chunk_id(h)?)?;
-        self.chunks.get(pos)?.items.iter().find(|e| e.handle == h)
+        let chunk = self.chunks.get(pos)?;
+        chunk.items.get(chunk.at(h)?)
     }
     fn set_index(&mut self, h: Handle, chunk: Option<u32>) {
         if let Some(shard) = self.shards.get_mut(shard_of(h)) {
@@ -89,7 +110,7 @@ impl EntityStore {
     fn new_chunk(&mut self) -> Arc<Chunk> {
         let id = self.next_chunk;
         self.next_chunk = self.next_chunk.wrapping_add(1);
-        Arc::new(Chunk { id, items: Vec::with_capacity(64) })
+        Arc::new(Chunk { id, items: Vec::with_capacity(64), keys: Vec::with_capacity(64) })
     }
     /// Append on top of the draw order. Replaces an entity with the same handle in place.
     pub fn push(&mut self, e: Entity) {
@@ -105,7 +126,7 @@ impl EntityStore {
         let h = e.handle;
         let Some(last) = self.chunks.last_mut() else { return };
         let chunk = Arc::make_mut(last);
-        chunk.items.push(Arc::new(e));
+        chunk.push(Arc::new(e));
         let id = chunk.id;
         self.set_index(h, Some(id));
         self.len += 1;
@@ -124,7 +145,7 @@ impl EntityStore {
         let h = e.handle;
         let Some(first) = self.chunks.first_mut() else { return };
         let chunk = Arc::make_mut(first);
-        chunk.items.insert(0, Arc::new(e));
+        chunk.insert(0, Arc::new(e));
         let id = chunk.id;
         self.set_index(h, Some(id));
         self.len += 1;
@@ -135,7 +156,7 @@ impl EntityStore {
         let Some(pos) = self.chunk_pos(id) else { return false };
         let Some(c) = self.chunks.get_mut(pos) else { return false };
         let chunk = Arc::make_mut(c);
-        if let Some(slot) = chunk.items.iter_mut().find(|x| x.handle == e.handle) {
+        if let Some(slot) = chunk.at(e.handle).and_then(|i| chunk.items.get_mut(i)) {
             *slot = Arc::new(e);
             true
         } else {
@@ -147,8 +168,8 @@ impl EntityStore {
         let pos = self.chunk_pos(id)?;
         let c = self.chunks.get_mut(pos)?;
         let chunk = Arc::make_mut(c);
-        let i = chunk.items.iter().position(|x| x.handle == h)?;
-        let e = chunk.items.remove(i);
+        let i = chunk.at(h)?;
+        let e = chunk.remove(i);
         let empty = chunk.items.is_empty();
         if empty {
             self.chunks.remove(pos);
@@ -163,7 +184,7 @@ impl EntityStore {
         let Some(pos) = self.chunk_pos(id) else { return false };
         let Some(c) = self.chunks.get_mut(pos) else { return false };
         let chunk = Arc::make_mut(c);
-        match chunk.items.iter_mut().find(|x| x.handle == h) {
+        match chunk.at(h).and_then(|i| chunk.items.get_mut(i)) {
             Some(slot) => {
                 f(Arc::make_mut(slot));
                 true
@@ -194,7 +215,7 @@ impl EntityStore {
     pub fn neighbours(&self, h: Handle) -> Option<(Option<Handle>, Option<Handle>)> {
         let pos = self.chunk_pos(self.chunk_id(h)?)?;
         let items = &self.chunks.get(pos)?.items;
-        let i = items.iter().position(|e| e.handle == h)?;
+        let i = self.chunks.get(pos)?.at(h)?;
         let below = match i.checked_sub(1) {
             Some(j) => items.get(j),
             None => pos.checked_sub(1).and_then(|p| self.chunks.get(p)).and_then(|c| c.items.last()),
@@ -221,9 +242,9 @@ impl EntityStore {
             return false;
         };
         let chunk = Arc::make_mut(c);
-        let i = chunk.items.iter().position(|x| x.handle == anchor).unwrap_or(chunk.items.len());
+        let i = chunk.at(anchor).unwrap_or(chunk.items.len());
         let i = if above { (i + 1).min(chunk.items.len()) } else { i };
-        chunk.items.insert(i, e);
+        chunk.insert(i, e);
         let split = chunk.items.len() > 2 * CHUNK_MAX;
         self.set_index(h, Some(id));
         self.len += 1;
@@ -237,9 +258,12 @@ impl EntityStore {
         let mut fresh = self.new_chunk();
         let Some(c) = self.chunks.get_mut(pos) else { return };
         let chunk = Arc::make_mut(c);
-        let tail = chunk.items.split_off(chunk.items.len() / 2);
+        let half = chunk.items.len() / 2;
+        let tail = chunk.items.split_off(half);
+        let keys = chunk.keys.split_off(half);
         let new = Arc::make_mut(&mut fresh);
         new.items = tail;
+        new.keys = keys;
         let (id, moved): (u32, Vec<Handle>) = (new.id, new.items.iter().map(|e| e.handle).collect());
         self.chunks.insert(pos + 1, fresh);
         for h in moved {
@@ -260,7 +284,7 @@ impl EntityStore {
             let h = e.handle;
             let Some(last) = self.chunks.last_mut() else { return };
             let chunk = Arc::make_mut(last);
-            chunk.items.push(e);
+            chunk.push(e);
             let id = chunk.id;
             self.set_index(h, Some(id));
             self.len += 1;
