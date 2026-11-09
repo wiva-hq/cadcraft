@@ -9,3 +9,5 @@
 *.swp
 /apps/cadcraft-web/dist/
 /.claude/worktrees/
+# The Forest package's build (crates/wasm/forest_pkg.sh).
+crates/wasm/pkg/

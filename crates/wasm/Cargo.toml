@@ -1,0 +1,21 @@
+[package]
+name = "cadcraft-wasm"
+description = "CADCraft's engine for Forest, in WebAssembly: a session whose drawing follows a Loro document, its display lists, snaps and files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cadcraft-engine = { workspace = true }
+cadcraft-io = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+wasm-bindgen = "=0.2.130"
